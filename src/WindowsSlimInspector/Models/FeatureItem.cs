@@ -49,8 +49,8 @@ public sealed class FeatureItem : INotifyPropertyChanged
 
     public string StateText => State switch
     {
-        FeatureState.Enabled => "켜짐",
-        FeatureState.Disabled => "꺼짐",
+        FeatureState.Enabled => "활성",
+        FeatureState.Disabled => "비활성",
         FeatureState.Unsupported => "지원 안 됨",
         FeatureState.Error => "확인 실패",
         _ => "확인 중"
@@ -59,7 +59,7 @@ public sealed class FeatureItem : INotifyPropertyChanged
     public Brush StateBrush => State switch
     {
         FeatureState.Disabled => Brushes.IndianRed,
-        FeatureState.Enabled => Brushes.ForestGreen,
+        FeatureState.Enabled => Brushes.LimeGreen,
         FeatureState.Unsupported => Brushes.DarkGray,
         FeatureState.Error => Brushes.DarkOrange,
         _ => Brushes.SlateGray
