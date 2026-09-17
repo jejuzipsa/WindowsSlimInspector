@@ -1,0 +1,41 @@
+name: Build Windows Portable
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore src/WindowsSlimInspector/WindowsSlimInspector.csproj
+
+      - name: Publish portable app
+        run: dotnet publish src/WindowsSlimInspector/WindowsSlimInspector.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+
+      - name: Prepare package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package\WindowsSlimInspector | Out-Null
+          Copy-Item publish\WindowsSlimInspector.exe package\WindowsSlimInspector\WindowsSlimInspector.exe
+          New-Item -ItemType Directory -Force -Path package\WindowsSlimInspector\Logs | Out-Null
+          Copy-Item README.md package\WindowsSlimInspector\README.txt
+          Compress-Archive -Path package\WindowsSlimInspector -DestinationPath WindowsSlimInspector_Portable.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WindowsSlimInspector-Portable
+          path: WindowsSlimInspector_Portable.zip
+          if-no-files-found: error
