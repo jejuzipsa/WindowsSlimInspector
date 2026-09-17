@@ -1,0 +1,140 @@
+using Microsoft.Win32;
+using WindowsSlimInspector.Models;
+
+namespace WindowsSlimInspector.Services;
+
+public sealed class WindowsSlimService
+{
+    private sealed record RegSetting(string Id, string Name, string Description, RegistryHive Hive, string SubKey, string ValueName, object DisabledValue, object EnabledValue);
+
+    private readonly List<RegSetting> _settings =
+    [
+        new("ads", "광고 / 추천", "Windows 추천 및 프로모션 콘텐츠를 줄입니다.", RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "SubscribedContent-338388Enabled", 0, 1),
+        new("consumer", "Consumer Experience", "추천 앱 및 소비자 환경 콘텐츠를 비활성화합니다.", RegistryHive.LocalMachine, @"SOFTWARE\Policies\Microsoft\Windows\CloudContent", "DisableWindowsConsumerFeatures", 1, 0),
+        new("tips", "Tips / Welcome Experience", "Windows 팁과 환영 환경 노출을 줄입니다.", RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "SoftLandingEnabled", 0, 1),
+        new("bing", "Bing 웹 검색", "시작 메뉴 검색의 웹 결과를 끄고 로컬 검색은 유지합니다.", RegistryHive.CurrentUser, @"Software\Policies\Microsoft\Windows\Explorer", "DisableSearchBoxSuggestions", 1, 0),
+        new("searchhighlights", "Search Highlights", "검색창의 온라인 하이라이트 콘텐츠를 끕니다.", RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\SearchSettings", "IsDynamicSearchBoxEnabled", 0, 1),
+        new("widgets", "Widgets / News", "Windows 위젯 및 뉴스 피드를 비활성화합니다.", RegistryHive.LocalMachine, @"SOFTWARE\Policies\Microsoft\Dsh", "AllowNewsAndInterests", 0, 1),
+        new("copilot", "Copilot", "Windows Copilot 정책 노출을 비활성화합니다.", RegistryHive.CurrentUser, @"Software\Policies\Microsoft\Windows\WindowsCopilot", "TurnOffWindowsCopilot", 1, 0),
+        new("adid", "광고 ID / 맞춤 콘텐츠", "광고 ID 기반 개인화 사용을 제한합니다.", RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo", "Enabled", 0, 1)
+    ];
+
+    public IReadOnlyList<FeatureItem> CreateFeatureItems()
+    {
+        var list = _settings.Select(s => new FeatureItem
+        {
+            Id = s.Id,
+            Name = s.Name,
+            Description = s.Description
+        }).ToList();
+
+        list.Add(new FeatureItem { Id = "phonelink", Name = "Phone Link", Description = "Phone Link 자동 시작/백그라운드 사용을 관리합니다." });
+        list.Add(new FeatureItem { Id = "teams", Name = "Teams / Chat", Description = "개인용 Teams/Chat 자동 시작을 관리합니다." });
+        return list;
+    }
+
+    public Task RefreshAsync(IEnumerable<FeatureItem> items)
+    {
+        foreach (var item in items)
+        {
+            try
+            {
+                var setting = _settings.FirstOrDefault(x => x.Id == item.Id);
+                if (setting is not null)
+                {
+                    item.State = ReadSetting(setting) ? FeatureState.Disabled : FeatureState.Enabled;
+                    item.Detail = "Registry policy/state";
+                    continue;
+                }
+
+                item.State = item.Id switch
+                {
+                    "phonelink" => IsRunEntryPresent("PhoneExperienceHost") ? FeatureState.Enabled : FeatureState.Disabled,
+                    "teams" => IsTeamsStartupPresent() ? FeatureState.Enabled : FeatureState.Disabled,
+                    _ => FeatureState.Unsupported
+                };
+            }
+            catch (Exception ex)
+            {
+                item.State = FeatureState.Error;
+                item.Detail = ex.Message;
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    public async Task ApplyAsync(IEnumerable<FeatureItem> items, bool disable, Action<string> log)
+    {
+        foreach (var item in items.Where(x => x.IsSelected))
+        {
+            try
+            {
+                var setting = _settings.FirstOrDefault(x => x.Id == item.Id);
+                if (setting is not null)
+                {
+                    WriteSetting(setting, disable);
+                    log($"{item.Name}: {(disable ? "Disabled" : "Restored")}");
+                }
+                else if (item.Id == "phonelink")
+                {
+                    SetRunEntry("PhoneExperienceHost", disable);
+                    log($"{item.Name}: startup {(disable ? "disabled" : "restored when available")}");
+                }
+                else if (item.Id == "teams")
+                {
+                    SetTeamsStartup(disable);
+                    log($"{item.Name}: startup {(disable ? "disabled" : "restored when available")}");
+                }
+            }
+            catch (Exception ex)
+            {
+                log($"{item.Name}: ERROR - {ex.Message}");
+            }
+        }
+
+        await RefreshAsync(items);
+    }
+
+    private static bool ReadSetting(RegSetting setting)
+    {
+        using var baseKey = RegistryKey.OpenBaseKey(setting.Hive, RegistryView.Registry64);
+        using var key = baseKey.OpenSubKey(setting.SubKey, writable: false);
+        var value = key?.GetValue(setting.ValueName);
+        if (value is null) return false;
+        return Equals(Convert.ToInt32(value), Convert.ToInt32(setting.DisabledValue));
+    }
+
+    private static void WriteSetting(RegSetting setting, bool disable)
+    {
+        using var baseKey = RegistryKey.OpenBaseKey(setting.Hive, RegistryView.Registry64);
+        using var key = baseKey.CreateSubKey(setting.SubKey, writable: true) ?? throw new InvalidOperationException("Registry key create failed");
+        key.SetValue(setting.ValueName, disable ? setting.DisabledValue : setting.EnabledValue, RegistryValueKind.DWord);
+    }
+
+    private static bool IsRunEntryPresent(string name)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
+        return key?.GetValue(name) is not null;
+    }
+
+    private static void SetRunEntry(string name, bool disable)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true);
+        if (disable) key?.DeleteValue(name, throwOnMissingValue: false);
+    }
+
+    private static bool IsTeamsStartupPresent()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
+        return key?.GetValueNames().Any(n => n.Contains("Teams", StringComparison.OrdinalIgnoreCase)) == true;
+    }
+
+    private static void SetTeamsStartup(bool disable)
+    {
+        if (!disable) return;
+        using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true);
+        if (key is null) return;
+        foreach (var name in key.GetValueNames().Where(n => n.Contains("Teams", StringComparison.OrdinalIgnoreCase)).ToArray())
+            key.DeleteValue(name, false);
+    }
+}
